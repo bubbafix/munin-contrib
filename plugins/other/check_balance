@@ -1,0 +1,80 @@
+#!/usr/bin/perl -w
+
+=head1 NAME
+
+check_balance - Plugin to monitor phone's balance (megafon cellular operator) through serviceguide
+
+=head1 CONFIGURATION
+
+The following environment variables are used
+
+ names       - monitored objects names, e.g. "env.names mother father".
+ phone_$name - phone number, e.g. "env.phone_mother 9211234567".
+ pass_$name  - password, e.g. "env.pass_mother passw0rd"
+
+=head1 AUTHOR
+
+Original script: http://www.linux.org.ru/gallery/screenshots/2093228#comment-2100142
+Edited by Dmitriy Beketov: http://gentooway.ru/2010/10/cacti-megafon-balance
+Edited by Denis Kapralov 
+
+=head1 LICENSE
+
+No licence yet.
+
+=head1 NOTES
+
+Check $url variable for proper value in case of other operator and/or branch
+
+=cut
+
+use strict;
+require LWP::UserAgent;
+my $DEBUG = $ENV{'MUNIN_DEBUG'} || 0;    
+
+# This url intended for Megafon NW, change if appropriate
+my $url = 'https://serviceguide.megafonnw.ru/ROBOTS/SC_TRAY_INFO';
+my @names = split ' ', $ENV{names} if exists $ENV{names};
+my $warn = $ENV{warning} if exists $ENV{warning};
+my $crit = $ENV{critical} if exists $ENV{critical};
+
+warn "[DEBUG] names: ",join(', ',@names),"\n" if $DEBUG;
+
+if (defined $ARGV[0]) {
+  if ($ARGV[0] eq 'config') {
+    print "graph_title Megafon balance\n";
+    print "graph_vlabel RUR\n";
+    print "graph_info This graph shows balance in RUR on specified phones of Megafon operator\n";
+    foreach (@names) {
+	print "$_.label $_\n";
+	print "$_.warning $warn\n" if exists $ENV{warning};
+	print "$_.critical $crit\n" if exists $ENV{critical};
+    }
+    exit 0;
+  }
+}
+
+foreach my $name (@names) {
+  warn "[DEBUG] Processing $name\n" if $DEBUG;
+  my $phone = $ENV{'phone_'.$name} if exists $ENV{'phone_'.$name};
+  my $pass = $ENV{'pass_'.$name} if exists $ENV{'pass_'.$name};
+  my $value = get_balance($phone, $pass);
+  warn "[DEBUG] value = $value\n" if $DEBUG;
+  print "$name.value $value\n";
+  next;
+}
+
+sub get_balance {
+  my ($phone, $passwd) = @_;
+  my $agent = LWP::UserAgent->new;
+  warn "[DEBUG] phone = '$phone'\n" if $DEBUG;
+#  warn "[DEBUG] pass = '$passwd'\n" if $DEBUG;
+  my $response = $agent->post($url, ['X_Username' => $phone, 'X_Password' => $passwd]);
+  warn "[DEBUG] content: ", $response->content if $DEBUG;
+  warn "[DEBUG] $url error:",$response->status_line if $DEBUG; 
+  return "U" unless $response->is_success;
+  $response->content =~ /<BALANCE>(.+?)<\/BALANCE>/;
+  my $rc = (defined $1)?($1):("U");
+  warn "[DEBUG] rc = $rc\n" if $DEBUG;
+  return $rc;
+}
