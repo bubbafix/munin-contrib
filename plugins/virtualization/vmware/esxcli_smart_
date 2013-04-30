@@ -1,0 +1,129 @@
+#!/usr/bin/perl -w
+# -*-  perl -*-
+
+=head1 NAME
+
+esxcli_smart_ - Munin plugin to monitor disk S.M.A.R.T. status from esxi
+
+This plugin uses the vSphere Command-Line Interface available at 
+https://my.vmware.com/web/vmware/details?downloadGroup=VSP510-VCLI-510&productId=285
+
+=head1 APPLICABLE SYSTEMS
+
+VMWare ESXi 5.1
+
+=head1 USAGE 
+
+Put this file in /usr/share/munin/plugins, `chmod +x` it and `ln -s` it to
+/etc/munin/plugins/esxcli_smart_<serial number of disc drive to monitor>
+By default Serial Number used in storage name and Devfs Path at esxi.
+The name can looks like this:
+t10.ATA_____ST3250310AS_________________________________________9RY00MQA
+Where ST3250310AS is disc model and 9RY00MQA is serial number.
+
+You can get the full list by running command:
+---- snip ----
+esxcli --server=<host> --username=<username> --password=<password> storage core device list
+---- snip ----
+
+Then add a file "esxcli_smart_" /etc/munin/plugin-conf.d with content like this
+---- snip ----
+[esxcli_smart_*]
+env.username <username>
+env.password <password>
+env.host <esxi host name or IP>
+---- snip ----
+
+=head1 MAGIC MARKERS
+
+  #%# family=manual
+
+=head1 AUTHOR
+
+bubbafix <bfpager@nm.ru>
+
+=cut
+
+use strict;
+use Munin::Plugin;
+my $DEBUG = ${Munin::Plugin::DEBUG};
+my (%status, %threshold, $sn, $host);
+
+sub get_values() {
+    # get username & password
+    my $username = $ENV{user} || 'root';
+    my $password = $ENV{password} || '';
+
+    # get host ip/name or use localhost by default
+    $host = $ENV{host} || 'localhost';
+
+    # get s/n for disc
+    $0 =~ /esxcli_smart_(.+)$/;
+    $sn = $1;
+
+    # get disc path by s/n from list
+    my $list = `esxcli --server=$host --username=$username --password=$password storage core device list | grep "Devfs Path" | grep $sn`;
+    # crop disc name
+    $list =~ /\/([\w\.\:]+)$/;
+    my $disc = $1;
+
+    # get status values by disc id
+    my @status = split(/\n/, `esxcli --server=$host --username=$username --password=$password storage core device smart get -d $disc`);
+    # convert values
+    foreach (@status) {
+	# skip header line
+	next if /^\s*Parameter\s+Value/;
+	# skip delimiter line
+	next if /^\s*\-+/;
+	# get status key, its current value, threshold and worst (last is unused)
+	/^\s*([\w\s\-]+)\s{2,}([\w\/]+)\s{2,}([\w\/]+)\s{2,}([\w\/]+)\s*$/;
+	my ($key, $value1, $value2) = ($1, $2, $3);
+	$key =~ s/\s+$//;
+	$key =~ s/\s/_/g;
+	if ($key =~ /Health_Status/) {
+	    if ($value1 =~ /OK/) {
+		# set 10 as max value for OK assuming lower values can be as warnings
+		$value1 = 10;
+	    } else {
+		# as far as other values except OK are unknown - let it be zero
+		$value1 = 0;
+	    }
+	    # and threshold
+	    $value2 = 0;
+	}
+	$status{$key}=$value1;
+	$threshold{$key}=$value2;
+    }
+}
+
+sub print_values() {
+    # print values
+    foreach my $key (sort keys %status) {
+	print "$key.value $status{$key}\n";
+    }
+}
+
+if ( defined($ARGV[0]) and $ARGV[0] eq "autoconf" ) {
+    print "no\n";
+    exit 0;
+}
+
+if ( defined($ARGV[0]) and $ARGV[0] eq "config" ) {
+    # get values for setting threshold
+    get_values();
+    # printing config
+    print "graph_title S.M.A.R.T values for drive $sn at $host\n";
+    print "graph_vlabel Attribute S.M.A.R.T value\n";
+    print "graph_args --base 1000 --lower-limit 0\n";
+    #print "graph_category disk\n";
+    print "graph_category esxi\n";
+    print "graph_info This graph shows the value of all S.M.A.R.T attributes of drive $sn available from esxcli at $host\n";
+    foreach (keys %status) {
+	print "$_.label $_\n";
+	print "$_.critical $threshold{$_}:\n";
+    }
+    exit 0;
+}
+
+get_values();
+print_values();
