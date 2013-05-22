@@ -1,0 +1,123 @@
+#!/usr/bin/php
+
+<?php
+/******************************************************************************
+NAME
+balance_tele2ru - Plugin to monitor balance of cellular subscriber 
+		for 'Tele2 Russia' operator through its web portal.
+
+CONFIGURATION
+The following environment variables are used
+
+ names       - monitored objects names, e.g. "env.names mother father".
+ phone_$name - phone number, e.g. "env.phone_mother 9501234567".
+ pass_$name  - password, e.g. "env.pass_mother passw0rd"
+ url         - operator's web site url
+
+AUTHOR
+bubbafix <bfpager@nm.ru>
+
+LICENSE
+No licence yet.
+Free to use.
+
+NOTES
+Check $url variable for proper value in case of other operator and/or branch
+******************************************************************************/
+
+$url = getenv('url');
+if ($url=="") $url = "https://my.tele2.ru";
+
+$warn = getenv('warning');
+$crit = getenv('critical');
+
+$projects = array();
+$names = array();
+$names = preg_split("/ /", getenv('names'));
+
+// config printing
+if (isset($argc) && $argc > 1) {
+    if ($argv[1] == 'autoconf') {
+        echo "no\n";
+    }
+    if ($argv[1] == 'config') {
+	preg_match("/balance_tele2ru_*(.+)$/", $_SERVER["SCRIPT_FILENAME"], $match);
+        if (isset($match[1])) {
+	    $group = ". " . $match[1];
+        } else {
+            $group = "";
+	}
+        echo "graph_title Balance. Tele2". $group ."\n"
+	    . "graph_vlabel RUR\n"
+	    . "graph_info This graph shows balance for specified subscribers of Tele2 operator\n"
+	    . "graph_category provider\n"
+	    ;
+	foreach($names as $name) {
+	    echo "$name.label $name\n";
+	    echo "$name.info balance for $name\n";
+	    if ($warn != "") echo "$name.warning $warn\n";
+	    if ($crit != "") echo "$name.critical $crit\n";
+	}
+    }
+    exit(0);
+}
+
+foreach($names as $name) {
+    $phone = getenv('phone_'.$name);
+    $pass = getenv('pass_'.$name);
+    $value = get_balance($url, $phone, $pass);
+    echo "$name.value $value\n";
+}
+
+function get_balance($url, $phone, $pass) {
+    $curl = curl_init(); 
+    curl_setopt($curl, CURLOPT_FAILONERROR, true); 
+    curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true); 
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true); 
+    curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, false); 
+    curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, false);   
+    curl_setopt($curl, CURLOPT_COOKIEFILE, "cookie.txt");
+    curl_setopt($curl, CURLOPT_COOKIEJAR, "cookie.txt");
+    // logout
+    curl_setopt($curl, CURLOPT_URL, $url."/public/security/logout");
+    $result = curl_exec($curl); 
+    // first access to get session
+    curl_setopt($curl, CURLOPT_URL, $url);
+    $result = curl_exec($curl); 
+    // get secret key/value to use in POST
+    // example: <input type="hidden" name="csrfTokpWrCH" value="uxiuEIGAEeIAAAAmLYpWr6lg"/>
+    preg_match("/<input[^>]*name=\"(csrf[^\"]*)\"[^>]*value=\"([^\"]*)\"/", $result, $match);
+    $seckey = $match[1];
+    $secvalue = $match[2];
+    // set POST fields
+    curl_setopt($curl, CURLOPT_POSTFIELDS, "$seckey=$secvalue&j_username=$phone&j_password=$pass");
+    //curl_setopt($curl, CURLOPT_HEADER, 0);
+    //curl_setopt($curl, CURLOPT_POST, 1);
+    curl_setopt($curl, CURLOPT_URL, $url."/public/security/check");
+    $result = curl_exec($curl); 
+    // search for balance request data
+    $res = preg_match("/(csrf[^:]+):\s*\'([\w]+)\'\,\s*isBalanceRefresh/", $result, $match);
+    if ($res < 1) {
+	error_log("[WARNING] balance function not found");
+	return "U";
+    } 
+    $seckey = $match[1];
+    $secvalue = $match[2];
+    curl_setopt($curl, CURLOPT_POSTFIELDS, "$seckey=$secvalue&isBalanceRefresh=true");
+    // get info in json format
+    curl_setopt($curl, CURLOPT_URL, $url."/balance/json");
+    $result = curl_exec($curl); 
+    // decode json
+    $values = json_decode($result);
+    // get only number
+    preg_match("/[\d\.\,]+/", $values->balance, $match);
+    // replace , by .
+    $balance = preg_replace("/\,/", '.', $match[0]);
+    curl_setopt($curl, CURLOPT_URL, $url."/public/security/logout");
+    $result = curl_exec($curl); 
+    curl_close($curl); 
+//    sleep(2);
+    if (! isset($balance)) $balance = 'U';
+    return $balance;
+}
+?>
